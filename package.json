@@ -1,6 +1,6 @@
 {
   "name": "cesium-sensor-volumes",
-  "version": "1.100.0",
+  "version": "1.138.1",
   "description": "A Cesium plugin for visualizing sensor volumes.",
   "homepage": "https://github.com/Flowm/cesium-sensor-volumes",
   "license": "Apache-2.0",
