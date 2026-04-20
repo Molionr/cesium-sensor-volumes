@@ -13,12 +13,15 @@
   ],
   "main": "dist/cesium-sensor-volumes.js",
   "module": "dist/cesium-sensor-volumes.es.js",
+  "types": "dist/cesium-sensor-volumes.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/cesium-sensor-volumes.d.ts",
       "import": "./dist/cesium-sensor-volumes.es.js",
       "require": "./dist/cesium-sensor-volumes.js"
     },
     "./engine": {
+      "types": "./dist/cesium-sensor-volumes.engine.es.d.ts",
       "import": "./dist/cesium-sensor-volumes.engine.es.js"
     }
   },

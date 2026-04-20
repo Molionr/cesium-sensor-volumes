@@ -102,6 +102,27 @@ function createEngineBuilds() {
 		.pipe(gulp.dest('dist'));
 }
 
+function copyTypes() {
+	return gulp.src('lib/types/cesium-sensor-volumes.d.ts')
+		.pipe(gulp.dest('dist'));
+}
+
+function createEngineTypes() {
+	return gulp.src('lib/types/cesium-sensor-volumes.d.ts')
+		.pipe(through.obj(function(file, _, cb) {
+			if (file.isBuffer()) {
+				var content = file.contents.toString();
+				// Rewrite cesium imports/module augmentations for the @cesium/engine entry
+				content = content.replace(/(from\s*['"])cesium(['"])/g, '$1@cesium/engine$2');
+				content = content.replace(/(declare\s+module\s*['"])cesium(['"])/g, '$1@cesium/engine$2');
+				file.contents = Buffer.from(content);
+			}
+			file.basename = 'cesium-sensor-volumes.engine.es.d.ts';
+			cb(null, file);
+		}))
+		.pipe(gulp.dest('dist'));
+}
+
 exports.buildEs = gulp.series(clean, gulp.parallel(preprocessShaders, preprocessJs), buildEs);
 
 function generateShims() {
@@ -158,7 +179,7 @@ async function buildUmd() {
 		format: 'umd'
 	});
 }
-exports.build = gulp.series(exports.buildEs, createEngineBuilds, generateShims, buildUmd);
+exports.build = gulp.series(exports.buildEs, createEngineBuilds, generateShims, buildUmd, gulp.parallel(copyTypes, createEngineTypes));
 
 exports.buildReload = gulp.series(exports.build, reload);
 
