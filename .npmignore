@@ -3,6 +3,7 @@
 *.iml
 .project
 .settings/
+.zed/
 
 # dependencies
 /node_modules/

@@ -1,12 +1,13 @@
 {
   "name": "cesium-sensor-volumes",
+  "author": "Molionr",
   "version": "1.140.0",
   "description": "A Cesium plugin for visualizing sensor volumes.",
-  "homepage": "https://github.com/Flowm/cesium-sensor-volumes",
+  "homepage": "https://github.com/Molionr/cesium-sensor-volumes",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Flowm/cesium-sensor-volumes.git"
+    "url": "https://github.com/Molionr/cesium-sensor-volumes.git"
   },
   "keywords": [
     "cesium"
