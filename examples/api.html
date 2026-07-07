@@ -94,8 +94,13 @@
 				);
 			}
 
-			function addRectangularSensor() {
+			function clearSensors() {
+				viewer.entities.removeAll();
 				viewer.scene.primitives.removeAll();
+			}
+
+			function addRectangularSensor() {
+				clearSensors();
 				var rectangularPyramidSensor =
 					new CesiumSensorVolumes.RectangularPyramidSensorVolume();
 
@@ -114,7 +119,7 @@
 			}
 
 			function addCustomSensor() {
-				viewer.scene.primitives.removeAll();
+				clearSensors();
 				var customSensor = new CesiumSensorVolumes.CustomSensorVolume();
 
 				var directions = [];
@@ -131,7 +136,7 @@
 			}
 
 			function addConicSensor() {
-				viewer.scene.primitives.removeAll();
+				clearSensors();
 				var position = Cesium.Cartesian3.fromDegrees(0, 0, 1000000);
 				var heading = Cesium.Math.toRadians(0);
 				var pitch = Cesium.Math.toRadians(90);
@@ -160,9 +165,58 @@
 				viewer.entities.add(entity);
 			}
 
+			function addStkComplexConicSensor() {
+				clearSensors();
+				var position = Cesium.Cartesian3.fromDegrees(
+					-75.59777,
+					40.03883,
+					1200000,
+				);
+				var heading = Cesium.Math.toRadians(35);
+				var pitch = Cesium.Math.toRadians(-180);
+				var roll = Cesium.Math.toRadians(0);
+				var hpr = new Cesium.HeadingPitchRoll(heading, pitch, roll);
+				var orientation = Cesium.Transforms.headingPitchRollQuaternion(
+					position,
+					hpr,
+				);
+				var entity = new Cesium.Entity({
+					name: "Complex Conic",
+					position,
+					orientation,
+				});
+				entity.addProperty("conicSensor");
+				entity.conicSensor =
+					new CesiumSensorVolumes.ConicSensorGraphics({
+						radius: 9000000,
+						minimumClockAngle: Cesium.Math.toRadians(0),
+						maximumClockAngle: Cesium.Math.TWO_PI,
+						innerHalfAngle: Cesium.Math.toRadians(8),
+						outerHalfAngle: Cesium.Math.toRadians(32),
+						lateralSurfaceMaterial:
+							Cesium.Color.DEEPSKYBLUE.withAlpha(0.22),
+						intersectionColor:
+							Cesium.Color.DEEPSKYBLUE.withAlpha(0.65),
+						intersectionWidth: 2,
+						showIntersection: true,
+					});
+				viewer.entities.add(entity);
+				viewer.camera.setView({
+					destination: Cesium.Cartesian3.fromDegrees(
+						-75.59777,
+						40.03883,
+						9000000,
+					),
+					orientation: {
+						heading: Cesium.Math.toRadians(0),
+						pitch: Cesium.Math.toRadians(-90),
+						roll: 0,
+					},
+				});
+			}
+
 			function addSarSensor() {
-				viewer.scene.primitives.removeAll();
-				viewer.entities.removeAll();
+				clearSensors();
 				var position = Cesium.Cartesian3.fromDegrees(
 					0,
 					14.857,
@@ -207,6 +261,7 @@
 			addToolbarButton("Rectangular", addRectangularSensor);
 			addToolbarButton("Custom", addCustomSensor);
 			addToolbarButton("Conic", addConicSensor);
+			addToolbarButton("Complex Conic", addStkComplexConicSensor);
 			addToolbarButton("SAR", addSarSensor);
 
 			addRectangularSensor();

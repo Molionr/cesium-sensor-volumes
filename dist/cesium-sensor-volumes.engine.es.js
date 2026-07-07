@@ -854,6 +854,18 @@ function assignSpherical$2(index, array, clock, cone) {
 	spherical.magnitude = 1.0;
 }
 
+function createCircularDirections(cone, reverse) {
+	var angleStep = Math$1.toRadians(2.0);
+	var sampleCount = Math.ceil(Math$1.TWO_PI / angleStep);
+	var clockStep = Math$1.TWO_PI / sampleCount;
+	var directions = new Array(sampleCount);
+	for (var i = 0; i < sampleCount; i++) {
+		var clock = (reverse ? sampleCount - i - 1 : i) * clockStep;
+		assignSpherical$2(i, directions, clock, cone);
+	}
+	return directions;
+}
+
 // eslint-disable-next-line max-params
 function computeDirections(primitive, minimumClockAngle, maximumClockAngle, innerHalfAngle, outerHalfAngle) {
 	var directions = primitive.directions;
@@ -861,8 +873,17 @@ function computeDirections(primitive, minimumClockAngle, maximumClockAngle, inne
 	var i = 0;
 	var angleStep = Math$1.toRadians(2.0);
 	if (minimumClockAngle === 0.0 && maximumClockAngle === Math$1.TWO_PI) {
-		// No clock angle limits, so this is just a circle.
-		// There might be a hole but we're ignoring it for now.
+		if (innerHalfAngle) {
+			primitive.directionSegments = [{
+				directions: createCircularDirections(outerHalfAngle, false),
+				closed: true
+			}, {
+				directions: createCircularDirections(innerHalfAngle, true),
+				closed: true
+			}];
+			return;
+		}
+
 		for (angle = 0.0; angle < Math$1.TWO_PI; angle += angleStep) {
 			assignSpherical$2(i++, directions, angle, outerHalfAngle);
 		}

@@ -38,6 +38,19 @@ define([
 		var scene;
 		var visualizer;
 
+		function getOpenRadialSegments(directionSegments) {
+			return directionSegments.filter(function(segment) {
+				return !segment.closed && segment.directions.length === 2;
+			});
+		}
+
+		function expectSegmentCone(segment, cone) {
+			var directions = segment.directions;
+			for (var i = 0; i < directions.length; i++) {
+				expect(directions[i].cone).toEqual(cone);
+			}
+		}
+
 		beforeAll(function() {
 			scene = createScene();
 		});
@@ -171,6 +184,44 @@ define([
 			conicSensor.show.setValue(false);
 			visualizer.update(time);
 			expect(c.show).toBe(false);
+		});
+
+		it('should create a full clock ComplexConicSensor with inner boundary', function() {
+			var time = JulianDate.now();
+			var entityCollection = new EntityCollection();
+			visualizer = new ConicSensorVisualizer(scene, entityCollection);
+
+			var testObject = entityCollection.getOrCreateEntity('test');
+			testObject.addProperty('conicSensor');
+			testObject.position = new ConstantProperty(new Cartesian3(1234, 5678, 9101112));
+			testObject.orientation = new ConstantProperty(new Quaternion(0, 0, 0, 1));
+
+			var innerHalfAngle = 0.3;
+			var outerHalfAngle = 0.4;
+			var conicSensor = new ConicSensorGraphics();
+			conicSensor.minimumClockAngle = new ConstantProperty(0.0);
+			conicSensor.maximumClockAngle = new ConstantProperty(CesiumMath.TWO_PI);
+			conicSensor.innerHalfAngle = new ConstantProperty(innerHalfAngle);
+			conicSensor.outerHalfAngle = new ConstantProperty(outerHalfAngle);
+			testObject.conicSensor = conicSensor;
+
+			visualizer.update(time);
+
+			var c = scene.primitives.get(0);
+			var directionSegments = c.directionSegments;
+			expect(directionSegments.length).toEqual(2);
+			expect(directionSegments[0].closed).toEqual(true);
+			expect(directionSegments[1].closed).toEqual(true);
+			expect(directionSegments[0].directions.length).toBeGreaterThan(0);
+			expect(directionSegments[1].directions.length).toEqual(directionSegments[0].directions.length);
+			expect(getOpenRadialSegments(directionSegments).length).toEqual(0);
+			expectSegmentCone(directionSegments[0], outerHalfAngle);
+			expectSegmentCone(directionSegments[1], innerHalfAngle);
+
+			conicSensor.maximumClockAngle.setValue(CesiumMath.PI);
+			visualizer.update(time);
+			expect(c.directionSegments).toBeUndefined();
+			expect(c.directions.length).toBeGreaterThan(0);
 		});
 
 		it('should set IntersectionColor correctly with multiple conicSensors', function() {
