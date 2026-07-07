@@ -17,6 +17,7 @@
 			href="../node_modules/cesium/Build/Cesium/Widgets/widgets.css"
 		/>
 		<script src="../node_modules/cesium/Build/Cesium/Cesium.js"></script>
+		<script src="./ion-token.local.js"></script>
 		<script src="../dist/cesium-sensor-volumes.js"></script>
 
 		<style>
@@ -54,8 +55,23 @@
 		<div id="cesiumContainer"></div>
 		<div id="toolbar"></div>
 		<script>
-			Cesium.Ion.defaultAccessToken =
-				"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIzNDJiM2Q3ZC0wYzBhLTRjNjAtOGZiMi1lMDE0NDA3MGI4ZGEiLCJpZCI6Mzc1NTU3LCJpYXQiOjE3Njc3MTQ1MDZ9.S4Lry5BkLDTDd9oHZdrFKnkSoa83If8wCZgR5qXcBj4";
+			function getStoredCesiumIonAccessToken() {
+				try {
+					return window.localStorage.getItem(
+						"CESIUM_ION_ACCESS_TOKEN",
+					);
+				} catch (error) {
+					return undefined;
+				}
+			}
+
+			var cesiumIonAccessToken =
+				window.CESIUM_ION_ACCESS_TOKEN ||
+				getStoredCesiumIonAccessToken();
+
+			if (cesiumIonAccessToken) {
+				Cesium.Ion.defaultAccessToken = cesiumIonAccessToken;
+			}
 
 			var viewer = new Cesium.Viewer("cesiumContainer", {
 				sceneModePicker: false,

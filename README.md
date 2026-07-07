@@ -67,6 +67,7 @@ npm install @cesium/engine
 
 Simple examples are included in the [examples](examples/) folder. 
 To run locally, run `npm start` and navigate to [http://localhost:3000](http://localhost:3000) and select the example application to run.
+If an example needs Cesium Ion, put your token in `examples/ion-token.local.js`; that file is ignored by git. Use `examples/ion-token.local.example.js` as the template.
 
 ## Build
 
