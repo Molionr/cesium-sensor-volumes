@@ -15,8 +15,8 @@ Prebuilt minified and unminified versions of the plugin are in the [dist](dist/)
 
 Include the `cesium-sensor-volumes.js` file using a `script` tag after the `Cesium.js` `script` tag.
 
-The plugin automatically adds support for the CZML properties `agi_conicSensor`, `agi_customPatternSensor`, and `agi_rectangularSensor`.
-The corresponding `Entity` properties are `conicSensor`, `customPatternSensor`, and `rectangularSensor`.
+The plugin automatically adds support for the CZML properties `agi_conicSensor`, `agi_customPatternSensor`, `agi_rectangularSensor`, and `agi_sarSensor`.
+The corresponding `Entity` properties are `conicSensor`, `customPatternSensor`, `rectangularSensor`, and `sarSensor`.
 
 In order to load data directly into `Entity` objects that you create directly, you must call `entity.addProperty` to create each of the sensor properties you wish to use.
 The CZML processing does this automatically.
@@ -33,6 +33,15 @@ var entity = entityCollection.getOrCreateEntity('test');
 entity.addProperty('conicSensor');
 entity.conicSensor = new CesiumSensorVolumes.ConicSensorGraphics();
 entity.conicSensor.intersectionColor = new Cesium.ConstantProperty(new Cesium.Color(0.1, 0.2, 0.3, 0.4));
+
+// To create a SAR sensor
+entity.addProperty('sarSensor');
+entity.sarSensor = new CesiumSensorVolumes.SarSensorGraphics({
+	minimumElevationAngle: Cesium.Math.toRadians(15),
+	maximumElevationAngle: Cesium.Math.toRadians(65),
+	forwardExclusionAngle: Cesium.Math.toRadians(45),
+	aftExclusionAngle: Cesium.Math.toRadians(45)
+});
 </script>
 ```
 

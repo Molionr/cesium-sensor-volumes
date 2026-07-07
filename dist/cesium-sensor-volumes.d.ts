@@ -145,6 +145,47 @@ export class RectangularSensorGraphics {
 }
 
 /**
+ * Options accepted by {@link SarSensorGraphics}.
+ */
+export interface SarSensorGraphicsOptions {
+	show?: Property | boolean;
+	minimumElevationAngle?: Property | number;
+	maximumElevationAngle?: Property | number;
+	forwardExclusionAngle?: Property | number;
+	aftExclusionAngle?: Property | number;
+	altitude?: Property | number;
+	radius?: Property | number;
+	showIntersection?: Property | boolean;
+	intersectionColor?: Property | Color;
+	intersectionWidth?: Property | number;
+	lateralSurfaceMaterial?: MaterialProperty;
+}
+
+/**
+ * An optionally time-dynamic SAR sensor.
+ */
+export class SarSensorGraphics {
+	constructor(options?: SarSensorGraphicsOptions);
+
+	readonly definitionChanged: Event;
+
+	minimumElevationAngle: Property | undefined;
+	maximumElevationAngle: Property | undefined;
+	forwardExclusionAngle: Property | undefined;
+	aftExclusionAngle: Property | undefined;
+	altitude: Property | undefined;
+	lateralSurfaceMaterial: MaterialProperty | undefined;
+	intersectionColor: Property | undefined;
+	intersectionWidth: Property | undefined;
+	showIntersection: Property | undefined;
+	radius: Property | undefined;
+	show: Property | undefined;
+
+	clone(result?: SarSensorGraphics): SarSensorGraphics;
+	merge(source: SarSensorGraphics): void;
+}
+
+/**
  * Options accepted by {@link CustomSensorVolume}.
  */
 export interface CustomSensorVolumeOptions {
@@ -231,6 +272,45 @@ export class RectangularPyramidSensorVolume {
 }
 
 /**
+ * Options accepted by {@link SarSensorVolume}.
+ */
+export interface SarSensorVolumeOptions extends Omit<CustomSensorVolumeOptions, 'directions'> {
+	minimumElevationAngle?: number;
+	maximumElevationAngle?: number;
+	forwardExclusionAngle?: number;
+	aftExclusionAngle?: number;
+	altitude?: number;
+	surfaceRadius?: number;
+}
+
+/**
+ * A SAR sensor volume. Wraps one or more {@link CustomSensorVolume} instances.
+ */
+export class SarSensorVolume {
+	constructor(options?: SarSensorVolumeOptions);
+
+	minimumElevationAngle: number;
+	maximumElevationAngle: number;
+	forwardExclusionAngle: number;
+	aftExclusionAngle: number;
+	altitude: number;
+	surfaceRadius: number;
+	show: boolean;
+	showIntersection: boolean;
+	showThroughEllipsoid: boolean;
+	modelMatrix: Matrix4;
+	radius: number;
+	lateralSurfaceMaterial: Material;
+	intersectionColor: Color;
+	intersectionWidth: number;
+	id: any;
+
+	update(frameState: FrameState): void;
+	isDestroyed(): boolean;
+	destroy(): void;
+}
+
+/**
  * Maps {@link Entity#conicSensor} instances to {@link CustomSensorVolume} primitives.
  */
 export class ConicSensorVisualizer {
@@ -261,6 +341,16 @@ export class RectangularSensorVisualizer {
 }
 
 /**
+ * Maps {@link Entity#sarSensor} instances to {@link SarSensorVolume} primitives.
+ */
+export class SarSensorVisualizer {
+	constructor(scene: Scene, entityCollection: EntityCollection);
+	update(time: JulianDate): boolean;
+	isDestroyed(): boolean;
+	destroy(): void;
+}
+
+/**
  * Augment Cesium's Entity with the sensor graphics properties added by this plugin's
  * CZML processors.
  */
@@ -269,6 +359,7 @@ declare module 'cesium' {
 		conicSensor?: ConicSensorGraphics;
 		customPatternSensor?: CustomPatternSensorGraphics;
 		rectangularSensor?: RectangularSensorGraphics;
+		sarSensor?: SarSensorGraphics;
 	}
 }
 
@@ -286,6 +377,9 @@ declare const CesiumSensorVolumes: {
 	RectangularPyramidSensorVolume: typeof RectangularPyramidSensorVolume;
 	RectangularSensorGraphics: typeof RectangularSensorGraphics;
 	RectangularSensorVisualizer: typeof RectangularSensorVisualizer;
+	SarSensorGraphics: typeof SarSensorGraphics;
+	SarSensorVisualizer: typeof SarSensorVisualizer;
+	SarSensorVolume: typeof SarSensorVolume;
 };
 
 export default CesiumSensorVolumes;

@@ -22,7 +22,7 @@
  * Derived from Cesium Sensors - https://github.com/AnalyticalGraphicsInc/cesium-sensors
  */
 
-import { createPropertyDescriptor, createMaterialPropertyDescriptor, defined, DeveloperError, Event, Frozen, Cartesian3, SceneMode, RenderState, BlendingState, CullFace, Pass, Matrix4, BoundingSphere, ShaderSource, ShaderProgram, combine, destroyObject, DrawCommand, PrimitiveType, Material, Color, Buffer, BufferUsage, ComponentDatatype, VertexArray, Matrix3, Quaternion, AssociativeArray, Property, Math as Math$1, MaterialProperty, Spherical, clone, CzmlDataSource, DataSourceDisplay, TimeInterval } from 'cesium';
+import { createPropertyDescriptor, createMaterialPropertyDescriptor, defined, DeveloperError, Event, Frozen, Cartesian3, SceneMode, RenderState, BlendingState, CullFace, Pass, Matrix4, BoundingSphere, ShaderSource, ShaderProgram, combine, destroyObject, DrawCommand, PrimitiveType, Material, Color, Buffer, BufferUsage, ComponentDatatype, VertexArray, Matrix3, Quaternion, AssociativeArray, Property, Math as Math$1, MaterialProperty, Spherical, clone, Cartographic, Ellipsoid, CzmlDataSource, DataSourceDisplay, TimeInterval } from 'cesium';
 
 /**
  * An optionally time-dynamic cone.
@@ -296,8 +296,13 @@ const CustomSensorVolume = function(options) {
 	this.radius = options.radius ?? Number.POSITIVE_INFINITY;
 
 	this._directions = undefined;
+	this._directionSegments = undefined;
 	this._directionsDirty = false;
-	this.directions = defined(options.directions) ? options.directions : [];
+	if (defined(options.directionSegments)) {
+		this.directionSegments = options.directionSegments;
+	} else {
+		this.directions = defined(options.directions) ? options.directions : [];
+	}
 
 	/**
 	 * The surface appearance of the sensor.  This can be one of several built-in {@link Material} objects or a custom material, scripted with
@@ -389,78 +394,160 @@ Object.defineProperties(CustomSensorVolume.prototype, {
 		},
 		set: function(value) {
 			this._directions = value;
+			this._directionSegments = undefined;
+			this._directionsDirty = true;
+		}
+	},
+	directionSegments: {
+		get: function() {
+			return this._directionSegments;
+		},
+		set: function(value) {
+			this._directionSegments = value;
 			this._directionsDirty = true;
 		}
 	}
 });
 
-const n0Scratch = new Cartesian3();
-const n1Scratch = new Cartesian3();
-const n2Scratch = new Cartesian3();
-function computePositions(customSensorVolume) {
-	var directions = customSensorVolume._directions;
-	var length = directions.length;
-	var positions = new Float32Array(3 * length);
-	var r = isFinite(customSensorVolume.radius) ? customSensorVolume.radius : FAR;
-
-	var boundingVolumePositions = [Cartesian3.ZERO];
-
-	for (var i = length - 2, j = length - 1, k = 0; k < length; i = j++, j = k++) {
-		// PERFORMANCE_IDEA:  We can avoid redundant operations for adjacent edges.
-		var n0 = Cartesian3.fromSpherical(directions[i], n0Scratch);
-		var n1 = Cartesian3.fromSpherical(directions[j], n1Scratch);
-		var n2 = Cartesian3.fromSpherical(directions[k], n2Scratch);
-
-		// Extend position so the volume encompasses the sensor's radius.
-		var theta = Math.max(Cartesian3.angleBetween(n0, n1), Cartesian3.angleBetween(n1, n2));
-		var distance = r / Math.cos(theta * 0.5);
-		var p = Cartesian3.multiplyByScalar(n1, distance, new Cartesian3());
-
-		positions[(j * 3)] = p.x;
-		positions[(j * 3) + 1] = p.y;
-		positions[(j * 3) + 2] = p.z;
-
-		boundingVolumePositions.push(p);
+function getDirectionSegments(customSensorVolume) {
+	if (defined(customSensorVolume._directionSegments)) {
+		return customSensorVolume._directionSegments;
 	}
 
-	BoundingSphere.fromPoints(boundingVolumePositions, customSensorVolume._boundingSphere);
+	return [{
+		directions: customSensorVolume._directions,
+		closed: true
+	}];
+}
+
+function isClosedSegment(segment) {
+	return segment.closed !== false;
+}
+
+function isRenderableSegment(segment) {
+	var directions = segment.directions;
+	if (!defined(directions)) {
+		return false;
+	}
+
+	var length = directions.length;
+	return isClosedSegment(segment) ? length >= 3 : length >= 2;
+}
+
+const previousScratch = new Cartesian3();
+const currentScratch = new Cartesian3();
+const nextScratch = new Cartesian3();
+function computeSegmentPositions(segment, r, boundingVolumePositions) {
+	var directions = segment.directions;
+	var length = directions.length;
+	var closed = isClosedSegment(segment);
+	var positions = new Array(length);
+
+	for (var j = 0; j < length; j++) {
+		var current = Cartesian3.fromSpherical(directions[j], currentScratch);
+		var theta = 0.0;
+
+		if (closed || j > 0) {
+			var previousIndex = j === 0 ? length - 1 : j - 1;
+			var previous = Cartesian3.fromSpherical(directions[previousIndex], previousScratch);
+			theta = Math.max(theta, Cartesian3.angleBetween(previous, current));
+		}
+
+		if (closed || j < length - 1) {
+			var nextIndex = j === length - 1 ? 0 : j + 1;
+			var next = Cartesian3.fromSpherical(directions[nextIndex], nextScratch);
+			theta = Math.max(theta, Cartesian3.angleBetween(current, next));
+		}
+
+		// Extend position so the volume encompasses the sensor's radius.
+		var distance = r / Math.cos(theta * 0.5);
+		var p = Cartesian3.multiplyByScalar(current, distance, new Cartesian3());
+		positions[j] = p;
+		boundingVolumePositions.push(p);
+	}
 
 	return positions;
 }
 
-const nScratch = new Cartesian3();
-function createVertexArray(customSensorVolume, context) {
-	var positions = computePositions(customSensorVolume);
+function computeRenderableSegments(customSensorVolume) {
+	var directionSegments = getDirectionSegments(customSensorVolume);
+	var r = isFinite(customSensorVolume.radius) ? customSensorVolume.radius : FAR;
 
-	var length = customSensorVolume._directions.length;
-	var vertices = new Float32Array(2 * 3 * 3 * length);
+	var boundingVolumePositions = [Cartesian3.ZERO];
+	var renderableSegments = [];
+	var edgeCount = 0;
+
+	for (var i = 0; i < directionSegments.length; i++) {
+		var segment = directionSegments[i];
+		if (isRenderableSegment(segment)) {
+			var positions = computeSegmentPositions(segment, r, boundingVolumePositions);
+			var closed = isClosedSegment(segment);
+			renderableSegments.push({
+				positions: positions,
+				closed: closed
+			});
+			edgeCount += closed ? positions.length : positions.length - 1;
+		}
+	}
+
+	BoundingSphere.fromPoints(boundingVolumePositions, customSensorVolume._boundingSphere);
+
+	return {
+		edgeCount: edgeCount,
+		segments: renderableSegments
+	};
+}
+
+const nScratch = new Cartesian3();
+function writeEdge(vertices, k, p0, p1) {
+	var n = Cartesian3.normalize(Cartesian3.cross(p1, p0, nScratch), nScratch); // Per-face normals
+
+	vertices[k++] = 0.0; // Sensor vertex
+	vertices[k++] = 0.0;
+	vertices[k++] = 0.0;
+	vertices[k++] = n.x;
+	vertices[k++] = n.y;
+	vertices[k++] = n.z;
+
+	vertices[k++] = p1.x;
+	vertices[k++] = p1.y;
+	vertices[k++] = p1.z;
+	vertices[k++] = n.x;
+	vertices[k++] = n.y;
+	vertices[k++] = n.z;
+
+	vertices[k++] = p0.x;
+	vertices[k++] = p0.y;
+	vertices[k++] = p0.z;
+	vertices[k++] = n.x;
+	vertices[k++] = n.y;
+	vertices[k++] = n.z;
+
+	return k;
+}
+
+function createVertexArray(customSensorVolume, context) {
+	var renderableSegments = computeRenderableSegments(customSensorVolume);
+	if (renderableSegments.edgeCount === 0) {
+		return undefined;
+	}
+
+	var vertices = new Float32Array(2 * 3 * 3 * renderableSegments.edgeCount);
 
 	var k = 0;
-	for (var i = length - 1, j = 0; j < length; i = j++) {
-		var p0 = new Cartesian3(positions[(i * 3)], positions[(i * 3) + 1], positions[(i * 3) + 2]);
-		var p1 = new Cartesian3(positions[(j * 3)], positions[(j * 3) + 1], positions[(j * 3) + 2]);
-		var n = Cartesian3.normalize(Cartesian3.cross(p1, p0, nScratch), nScratch); // Per-face normals
-
-		vertices[k++] = 0.0; // Sensor vertex
-		vertices[k++] = 0.0;
-		vertices[k++] = 0.0;
-		vertices[k++] = n.x;
-		vertices[k++] = n.y;
-		vertices[k++] = n.z;
-
-		vertices[k++] = p1.x;
-		vertices[k++] = p1.y;
-		vertices[k++] = p1.z;
-		vertices[k++] = n.x;
-		vertices[k++] = n.y;
-		vertices[k++] = n.z;
-
-		vertices[k++] = p0.x;
-		vertices[k++] = p0.y;
-		vertices[k++] = p0.z;
-		vertices[k++] = n.x;
-		vertices[k++] = n.y;
-		vertices[k++] = n.z;
+	var segments = renderableSegments.segments;
+	for (var i = 0; i < segments.length; i++) {
+		var positions = segments[i].positions;
+		var length = positions.length;
+		if (segments[i].closed) {
+			for (var previousIndex = length - 1, currentIndex = 0; currentIndex < length; previousIndex = currentIndex++) {
+				k = writeEdge(vertices, k, positions[previousIndex], positions[currentIndex]);
+			}
+		} else {
+			for (var j = 1; j < length; j++) {
+				k = writeEdge(vertices, k, positions[j - 1], positions[j]);
+			}
+		}
 	}
 
 	var vertexBuffer = Buffer.createVertexBuffer({
@@ -601,13 +688,20 @@ CustomSensorVolume.prototype.update = function(frameState) {
 	var directionsChanged = this._directionsDirty;
 	if (directionsChanged) {
 		this._directionsDirty = false;
-		this._va = this._va && this._va.destroy();
 
-		var directions = this._directions;
-		if (directions && (directions.length >= 3)) {
-			this._frontFaceColorCommand.vertexArray = createVertexArray(this, context);
-			this._backFaceColorCommand.vertexArray = this._frontFaceColorCommand.vertexArray;
-			this._pickCommand.vertexArray = this._frontFaceColorCommand.vertexArray;
+		var vertexArray = this._frontFaceColorCommand.vertexArray;
+		if (defined(vertexArray)) {
+			vertexArray.destroy();
+		}
+		this._frontFaceColorCommand.vertexArray = undefined;
+		this._backFaceColorCommand.vertexArray = undefined;
+		this._pickCommand.vertexArray = undefined;
+
+		vertexArray = createVertexArray(this, context);
+		if (defined(vertexArray)) {
+			this._frontFaceColorCommand.vertexArray = vertexArray;
+			this._backFaceColorCommand.vertexArray = vertexArray;
+			this._pickCommand.vertexArray = vertexArray;
 		}
 	}
 
@@ -741,15 +835,15 @@ function removePrimitive(entity, hash, primitives) {
 	}
 }
 
-const defaultIntersectionColor$2 = Color.WHITE;
-const defaultIntersectionWidth$2 = 1.0;
-const defaultRadius$2 = Number.POSITIVE_INFINITY;
+const defaultIntersectionColor$3 = Color.WHITE;
+const defaultIntersectionWidth$3 = 1.0;
+const defaultRadius$3 = Number.POSITIVE_INFINITY;
 
-const matrix3Scratch$2 = new Matrix3();
-const cachedPosition$2 = new Cartesian3();
-const cachedOrientation$2 = new Quaternion();
+const matrix3Scratch$3 = new Matrix3();
+const cachedPosition$3 = new Cartesian3();
+const cachedOrientation$3 = new Quaternion();
 
-function assignSpherical$1(index, array, clock, cone) {
+function assignSpherical$2(index, array, clock, cone) {
 	var spherical = array[index];
 	if (!defined(spherical)) {
 		spherical = new Spherical();
@@ -770,21 +864,21 @@ function computeDirections(primitive, minimumClockAngle, maximumClockAngle, inne
 		// No clock angle limits, so this is just a circle.
 		// There might be a hole but we're ignoring it for now.
 		for (angle = 0.0; angle < Math$1.TWO_PI; angle += angleStep) {
-			assignSpherical$1(i++, directions, angle, outerHalfAngle);
+			assignSpherical$2(i++, directions, angle, outerHalfAngle);
 		}
 	} else {
 		// There are clock angle limits.
 		for (angle = minimumClockAngle; angle < maximumClockAngle; angle += angleStep) {
-			assignSpherical$1(i++, directions, angle, outerHalfAngle);
+			assignSpherical$2(i++, directions, angle, outerHalfAngle);
 		}
-		assignSpherical$1(i++, directions, maximumClockAngle, outerHalfAngle);
+		assignSpherical$2(i++, directions, maximumClockAngle, outerHalfAngle);
 		if (innerHalfAngle) {
 			for (angle = maximumClockAngle; angle > minimumClockAngle; angle -= angleStep) {
-				assignSpherical$1(i++, directions, angle, innerHalfAngle);
+				assignSpherical$2(i++, directions, angle, innerHalfAngle);
 			}
-			assignSpherical$1(i++, directions, minimumClockAngle, innerHalfAngle);
+			assignSpherical$2(i++, directions, minimumClockAngle, innerHalfAngle);
 		} else {
-			assignSpherical$1(i++, directions, maximumClockAngle, 0.0);
+			assignSpherical$2(i++, directions, maximumClockAngle, 0.0);
 		}
 	}
 	directions.length = i;
@@ -848,8 +942,8 @@ ConicSensorVisualizer.prototype.update = function(time) {
 		var show = entity.isShowing && entity.isAvailable(time) && Property.getValueOrDefault(conicSensorGraphics._show, time, true);
 
 		if (show) {
-			position = Property.getValueOrUndefined(entity._position, time, cachedPosition$2);
-			orientation = Property.getValueOrUndefined(entity._orientation, time, cachedOrientation$2);
+			position = Property.getValueOrUndefined(entity._position, time, cachedPosition$3);
+			orientation = Property.getValueOrUndefined(entity._orientation, time, cachedOrientation$3);
 			show = defined(position) && defined(orientation);
 		}
 
@@ -880,7 +974,7 @@ ConicSensorVisualizer.prototype.update = function(time) {
 		}
 
 		if (!Cartesian3.equals(position, data.position) || !Quaternion.equals(orientation, data.orientation)) {
-			Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation, matrix3Scratch$2), position, primitive.modelMatrix);
+			Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation, matrix3Scratch$3), position, primitive.modelMatrix);
 			data.position = Cartesian3.clone(position, data.position);
 			data.orientation = Quaternion.clone(orientation, data.orientation);
 		}
@@ -903,10 +997,10 @@ ConicSensorVisualizer.prototype.update = function(time) {
 			data.minimumClockAngle = minimumClockAngle;
 		}
 
-		primitive.radius = Property.getValueOrDefault(conicSensorGraphics._radius, time, defaultRadius$2);
+		primitive.radius = Property.getValueOrDefault(conicSensorGraphics._radius, time, defaultRadius$3);
 		primitive.lateralSurfaceMaterial = MaterialProperty.getValue(time, conicSensorGraphics._lateralSurfaceMaterial, primitive.lateralSurfaceMaterial);
-		primitive.intersectionColor = Property.getValueOrClonedDefault(conicSensorGraphics._intersectionColor, time, defaultIntersectionColor$2, primitive.intersectionColor);
-		primitive.intersectionWidth = Property.getValueOrDefault(conicSensorGraphics._intersectionWidth, time, defaultIntersectionWidth$2);
+		primitive.intersectionColor = Property.getValueOrClonedDefault(conicSensorGraphics._intersectionColor, time, defaultIntersectionColor$3, primitive.intersectionColor);
+		primitive.intersectionWidth = Property.getValueOrDefault(conicSensorGraphics._intersectionWidth, time, defaultIntersectionWidth$3);
 	}
 	return true;
 };
@@ -1101,13 +1195,13 @@ CustomPatternSensorGraphics.prototype.merge = function(source) {
 	this.lateralSurfaceMaterial = this.lateralSurfaceMaterial ?? source.lateralSurfaceMaterial;
 };
 
-const defaultIntersectionColor$1 = Color.WHITE;
-const defaultIntersectionWidth$1 = 1.0;
-const defaultRadius$1 = Number.POSITIVE_INFINITY;
+const defaultIntersectionColor$2 = Color.WHITE;
+const defaultIntersectionWidth$2 = 1.0;
+const defaultRadius$2 = Number.POSITIVE_INFINITY;
 
-const matrix3Scratch$1 = new Matrix3();
-const cachedPosition$1 = new Cartesian3();
-const cachedOrientation$1 = new Quaternion();
+const matrix3Scratch$2 = new Matrix3();
+const cachedPosition$2 = new Cartesian3();
+const cachedOrientation$2 = new Quaternion();
 
 /**
  * A {@link Visualizer} which maps {@link Entity#customPatternSensor} to a {@link CustomPatternSensor}.
@@ -1167,8 +1261,8 @@ CustomPatternSensorVisualizer.prototype.update = function(time) {
 		var show = entity.isShowing && entity.isAvailable(time) && Property.getValueOrDefault(customPatternSensorGraphics._show, time, true);
 
 		if (show) {
-			position = Property.getValueOrUndefined(entity._position, time, cachedPosition$1);
-			orientation = Property.getValueOrUndefined(entity._orientation, time, cachedOrientation$1);
+			position = Property.getValueOrUndefined(entity._position, time, cachedPosition$2);
+			orientation = Property.getValueOrUndefined(entity._orientation, time, cachedOrientation$2);
 			directions = Property.getValueOrUndefined(customPatternSensorGraphics._directions, time);
 			show = defined(position) && defined(orientation) && defined(directions);
 		}
@@ -1196,17 +1290,17 @@ CustomPatternSensorVisualizer.prototype.update = function(time) {
 		}
 
 		if (!Cartesian3.equals(position, data.position) || !Quaternion.equals(orientation, data.orientation)) {
-			Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation, matrix3Scratch$1), position, primitive.modelMatrix);
+			Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation, matrix3Scratch$2), position, primitive.modelMatrix);
 			data.position = Cartesian3.clone(position, data.position);
 			data.orientation = Quaternion.clone(orientation, data.orientation);
 		}
 
 		primitive.show = true;
 		primitive.directions = directions;
-		primitive.radius = Property.getValueOrDefault(customPatternSensorGraphics._radius, time, defaultRadius$1);
+		primitive.radius = Property.getValueOrDefault(customPatternSensorGraphics._radius, time, defaultRadius$2);
 		primitive.lateralSurfaceMaterial = MaterialProperty.getValue(time, customPatternSensorGraphics._lateralSurfaceMaterial, primitive.lateralSurfaceMaterial);
-		primitive.intersectionColor = Property.getValueOrClonedDefault(customPatternSensorGraphics._intersectionColor, time, defaultIntersectionColor$1, primitive.intersectionColor);
-		primitive.intersectionWidth = Property.getValueOrDefault(customPatternSensorGraphics._intersectionWidth, time, defaultIntersectionWidth$1);
+		primitive.intersectionColor = Property.getValueOrClonedDefault(customPatternSensorGraphics._intersectionColor, time, defaultIntersectionColor$2, primitive.intersectionColor);
+		primitive.intersectionWidth = Property.getValueOrDefault(customPatternSensorGraphics._intersectionWidth, time, defaultIntersectionWidth$2);
 	}
 	return true;
 };
@@ -1410,7 +1504,7 @@ RectangularSensorGraphics.prototype.merge = function(source) {
 	this.lateralSurfaceMaterial = this.lateralSurfaceMaterial ?? source.lateralSurfaceMaterial;
 };
 
-function assignSpherical(index, array, clock, cone) {
+function assignSpherical$1(index, array, clock, cone) {
 	var spherical = array[index];
 	if (!defined(spherical)) {
 		spherical = new Spherical();
@@ -1421,7 +1515,7 @@ function assignSpherical(index, array, clock, cone) {
 	spherical.magnitude = 1.0;
 }
 
-function updateDirections(rectangularSensor) {
+function updateDirections$1(rectangularSensor) {
 	var directions = rectangularSensor._customSensor.directions;
 
 	// At 90 degrees the sensor is completely open, and tan() goes to infinity.
@@ -1430,10 +1524,10 @@ function updateDirections(rectangularSensor) {
 	var theta = Math.atan(tanX / tanY);
 	var cone = Math.atan(Math.sqrt((tanX * tanX) + (tanY * tanY)));
 
-	assignSpherical(0, directions, theta, cone);
-	assignSpherical(1, directions, Math$1.toRadians(180.0) - theta, cone);
-	assignSpherical(2, directions, Math$1.toRadians(180.0) + theta, cone);
-	assignSpherical(3, directions, -theta, cone);
+	assignSpherical$1(0, directions, theta, cone);
+	assignSpherical$1(1, directions, Math$1.toRadians(180.0) - theta, cone);
+	assignSpherical$1(2, directions, Math$1.toRadians(180.0) + theta, cone);
+	assignSpherical$1(3, directions, -theta, cone);
 
 	directions.length = 4;
 	rectangularSensor._customSensor.directions = directions;
@@ -1450,7 +1544,7 @@ const RectangularPyramidSensorVolume = function(options) {
 	this._xHalfAngle = options.xHalfAngle ?? Math$1.PI_OVER_TWO;
 	this._yHalfAngle = options.yHalfAngle ?? Math$1.PI_OVER_TWO;
 
-	updateDirections(this);
+	updateDirections$1(this);
 };
 
 Object.defineProperties(RectangularPyramidSensorVolume.prototype, {
@@ -1467,7 +1561,7 @@ Object.defineProperties(RectangularPyramidSensorVolume.prototype, {
 
 			if (this._xHalfAngle !== value) {
 				this._xHalfAngle = value;
-				updateDirections(this);
+				updateDirections$1(this);
 			}
 		}
 	},
@@ -1484,7 +1578,7 @@ Object.defineProperties(RectangularPyramidSensorVolume.prototype, {
 
 			if (this._yHalfAngle !== value) {
 				this._yHalfAngle = value;
-				updateDirections(this);
+				updateDirections$1(this);
 			}
 		}
 	},
@@ -1575,13 +1669,13 @@ RectangularPyramidSensorVolume.prototype.destroy = function() {
 	return destroyObject(this);
 };
 
-const defaultIntersectionColor = Color.WHITE;
-const defaultIntersectionWidth = 1.0;
-const defaultRadius = Number.POSITIVE_INFINITY;
+const defaultIntersectionColor$1 = Color.WHITE;
+const defaultIntersectionWidth$1 = 1.0;
+const defaultRadius$1 = Number.POSITIVE_INFINITY;
 
-const matrix3Scratch = new Matrix3();
-const cachedPosition = new Cartesian3();
-const cachedOrientation = new Quaternion();
+const matrix3Scratch$1 = new Matrix3();
+const cachedPosition$1 = new Cartesian3();
+const cachedOrientation$1 = new Quaternion();
 
 /**
  * A {@link Visualizer} which maps {@link Entity#rectangularSensor} to a {@link RectangularSensor}.
@@ -1640,8 +1734,8 @@ RectangularSensorVisualizer.prototype.update = function(time) {
 		var show = entity.isShowing && entity.isAvailable(time) && Property.getValueOrDefault(rectangularSensorGraphics._show, time, true);
 
 		if (show) {
-			position = Property.getValueOrUndefined(entity._position, time, cachedPosition);
-			orientation = Property.getValueOrUndefined(entity._orientation, time, cachedOrientation);
+			position = Property.getValueOrUndefined(entity._position, time, cachedPosition$1);
+			orientation = Property.getValueOrUndefined(entity._orientation, time, cachedOrientation$1);
 			show = defined(position) && defined(orientation);
 		}
 
@@ -1668,7 +1762,7 @@ RectangularSensorVisualizer.prototype.update = function(time) {
 		}
 
 		if (!Cartesian3.equals(position, data.position) || !Quaternion.equals(orientation, data.orientation)) {
-			Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation, matrix3Scratch), position, primitive.modelMatrix);
+			Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation, matrix3Scratch$1), position, primitive.modelMatrix);
 			data.position = Cartesian3.clone(position, data.position);
 			data.orientation = Quaternion.clone(orientation, data.orientation);
 		}
@@ -1676,10 +1770,10 @@ RectangularSensorVisualizer.prototype.update = function(time) {
 		primitive.show = true;
 		primitive.xHalfAngle = Property.getValueOrDefault(rectangularSensorGraphics._xHalfAngle, time, Math$1.PI_OVER_TWO);
 		primitive.yHalfAngle = Property.getValueOrDefault(rectangularSensorGraphics._yHalfAngle, time, Math$1.PI_OVER_TWO);
-		primitive.radius = Property.getValueOrDefault(rectangularSensorGraphics._radius, time, defaultRadius);
+		primitive.radius = Property.getValueOrDefault(rectangularSensorGraphics._radius, time, defaultRadius$1);
 		primitive.lateralSurfaceMaterial = MaterialProperty.getValue(time, rectangularSensorGraphics._lateralSurfaceMaterial, primitive.lateralSurfaceMaterial);
-		primitive.intersectionColor = Property.getValueOrClonedDefault(rectangularSensorGraphics._intersectionColor, time, defaultIntersectionColor, primitive.intersectionColor);
-		primitive.intersectionWidth = Property.getValueOrDefault(rectangularSensorGraphics._intersectionWidth, time, defaultIntersectionWidth);
+		primitive.intersectionColor = Property.getValueOrClonedDefault(rectangularSensorGraphics._intersectionColor, time, defaultIntersectionColor$1, primitive.intersectionColor);
+		primitive.intersectionWidth = Property.getValueOrDefault(rectangularSensorGraphics._intersectionWidth, time, defaultIntersectionWidth$1);
 	}
 	return true;
 };
@@ -1726,6 +1820,924 @@ RectangularSensorVisualizer.prototype._onCollectionChanged = function(entityColl
 	for (i = changed.length - 1; i > -1; i--) {
 		entity = changed[i];
 		if (defined(entity._rectangularSensor) && defined(entity._position) && defined(entity._orientation)) {
+			entities.set(entity.id, entity);
+		} else {
+			removePrimitive(entity, hash, primitives);
+			entities.remove(entity.id);
+		}
+	}
+
+	for (i = removed.length - 1; i > -1; i--) {
+		entity = removed[i];
+		removePrimitive(entity, hash, primitives);
+		entities.remove(entity.id);
+	}
+};
+
+/**
+ * An optionally time-dynamic SAR sensor.
+ *
+ * @alias SarSensorGraphics
+ * @constructor
+ */
+const SarSensorGraphics = function(options) {
+	this._minimumElevationAngle = undefined;
+	this._minimumElevationAngleSubscription = undefined;
+	this._maximumElevationAngle = undefined;
+	this._maximumElevationAngleSubscription = undefined;
+	this._forwardExclusionAngle = undefined;
+	this._forwardExclusionAngleSubscription = undefined;
+	this._aftExclusionAngle = undefined;
+	this._aftExclusionAngleSubscription = undefined;
+	this._altitude = undefined;
+	this._altitudeSubscription = undefined;
+	this._lateralSurfaceMaterial = undefined;
+	this._lateralSurfaceMaterialSubscription = undefined;
+	this._intersectionColor = undefined;
+	this._intersectionColorSubscription = undefined;
+	this._intersectionWidth = undefined;
+	this._intersectionWidthSubscription = undefined;
+	this._showIntersection = undefined;
+	this._showIntersectionSubscription = undefined;
+	this._radius = undefined;
+	this._radiusSubscription = undefined;
+	this._show = undefined;
+	this._showSubscription = undefined;
+	this._definitionChanged = new Event();
+
+	this.merge(options ?? Frozen.EMPTY_OBJECT);
+};
+
+Object.defineProperties(SarSensorGraphics.prototype, {
+	/**
+	 * Gets the event that is raised whenever a new property is assigned.
+	 * @memberof SarSensorGraphics.prototype
+	 *
+	 * @type {Event}
+	 * @readonly
+	 */
+	definitionChanged: {
+		get: function() {
+			return this._definitionChanged;
+		}
+	},
+
+	/**
+	 * Gets or sets the numeric {@link Property} specifying the SAR minimum ground elevation angle.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	minimumElevationAngle: createPropertyDescriptor('minimumElevationAngle'),
+
+	/**
+	 * Gets or sets the numeric {@link Property} specifying the SAR maximum ground elevation angle.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	maximumElevationAngle: createPropertyDescriptor('maximumElevationAngle'),
+
+	/**
+	 * Gets or sets the numeric {@link Property} specifying the SAR forward exclusion angle.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	forwardExclusionAngle: createPropertyDescriptor('forwardExclusionAngle'),
+
+	/**
+	 * Gets or sets the numeric {@link Property} specifying the SAR aft exclusion angle.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	aftExclusionAngle: createPropertyDescriptor('aftExclusionAngle'),
+
+	/**
+	 * Gets or sets the numeric {@link Property} specifying the sensor altitude in meters.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	altitude: createPropertyDescriptor('altitude'),
+
+	/**
+	 * Gets or sets the {@link MaterialProperty} specifying the SAR sensor's appearance.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {MaterialProperty}
+	 */
+	lateralSurfaceMaterial: createMaterialPropertyDescriptor('lateralSurfaceMaterial'),
+
+	/**
+	 * Gets or sets the {@link Color} {@link Property} specifying the color of the line formed by the intersection of the sensor and other central bodies.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	intersectionColor: createPropertyDescriptor('intersectionColor'),
+
+	/**
+	 * Gets or sets the numeric {@link Property} specifying the width of the line formed by the intersection of the sensor and other central bodies.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	intersectionWidth: createPropertyDescriptor('intersectionWidth'),
+
+	/**
+	 * Gets or sets the boolean {@link Property} specifying the visibility of the line formed by the intersection of the sensor and other central bodies.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	showIntersection: createPropertyDescriptor('showIntersection'),
+
+	/**
+	 * Gets or sets the numeric {@link Property} specifying the radius of the sensor's projection.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	radius: createPropertyDescriptor('radius'),
+
+	/**
+	 * Gets or sets the boolean {@link Property} specifying the visibility of the sensor.
+	 * @memberof SarSensorGraphics.prototype
+	 * @type {Property}
+	 */
+	show: createPropertyDescriptor('show')
+});
+
+/**
+ * Duplicates a SarSensorGraphics instance.
+ *
+ * @param {SarSensorGraphics} [result] The object onto which to store the result.
+ * @returns {SarSensorGraphics} The modified result parameter or a new instance if one was not provided.
+ */
+SarSensorGraphics.prototype.clone = function(result) {
+	if (!defined(result)) {
+		result = new SarSensorGraphics();
+	}
+	result.show = this.show;
+	result.minimumElevationAngle = this.minimumElevationAngle;
+	result.maximumElevationAngle = this.maximumElevationAngle;
+	result.forwardExclusionAngle = this.forwardExclusionAngle;
+	result.aftExclusionAngle = this.aftExclusionAngle;
+	result.altitude = this.altitude;
+	result.radius = this.radius;
+	result.showIntersection = this.showIntersection;
+	result.intersectionColor = this.intersectionColor;
+	result.intersectionWidth = this.intersectionWidth;
+	result.lateralSurfaceMaterial = this.lateralSurfaceMaterial;
+	return result;
+};
+
+/**
+ * Assigns each unassigned property on this object to the value
+ * of the same property on the provided source object.
+ *
+ * @param {SarSensorGraphics} source The object to be merged into this object.
+ */
+SarSensorGraphics.prototype.merge = function(source) {
+	// >>includeStart('debug', pragmas.debug);
+	if (!defined(source)) {
+		throw new DeveloperError('source is required.');
+	}
+	// >>includeEnd('debug');
+
+	this.show = this.show ?? source.show;
+	this.minimumElevationAngle = this.minimumElevationAngle ?? source.minimumElevationAngle;
+	this.maximumElevationAngle = this.maximumElevationAngle ?? source.maximumElevationAngle;
+	this.forwardExclusionAngle = this.forwardExclusionAngle ?? source.forwardExclusionAngle;
+	this.aftExclusionAngle = this.aftExclusionAngle ?? source.aftExclusionAngle;
+	this.altitude = this.altitude ?? source.altitude;
+	this.radius = this.radius ?? source.radius;
+	this.showIntersection = this.showIntersection ?? source.showIntersection;
+	this.intersectionColor = this.intersectionColor ?? source.intersectionColor;
+	this.intersectionWidth = this.intersectionWidth ?? source.intersectionWidth;
+	this.lateralSurfaceMaterial = this.lateralSurfaceMaterial ?? source.lateralSurfaceMaterial;
+};
+
+const angleStep = Math$1.toRadians(2.0);
+const defaultSurfaceRadius$1 = 6378137.0;
+const epsilon = 1e-12;
+
+function validateElevationAngle(name, value) {
+	// >>includeStart('debug', pragmas.debug);
+	if (value < 0.0 || value > Math$1.PI_OVER_TWO) {
+		throw new DeveloperError(name + ' must be between 0 and 90 degrees.');
+	}
+	// >>includeEnd('debug');
+}
+
+function validateExclusionAngle(name, value) {
+	// >>includeStart('debug', pragmas.debug);
+	if (value < 0.0 || value > Math.PI) {
+		throw new DeveloperError(name + ' must be between 0 and 180 degrees.');
+	}
+	// >>includeEnd('debug');
+}
+
+function validateMinimumMaximum(minimumElevationAngle, maximumElevationAngle) {
+	// >>includeStart('debug', pragmas.debug);
+	if (minimumElevationAngle > maximumElevationAngle) {
+		throw new DeveloperError('minimumElevationAngle must be less than or equal to maximumElevationAngle.');
+	}
+	// >>includeEnd('debug');
+}
+
+function assignSpherical(array, clock, cone) {
+	array.push(new Spherical(clock, cone, 1.0));
+}
+
+function coneFromElevation(elevation, surfaceRadius, altitude) {
+	var denominator = surfaceRadius + altitude;
+	if (denominator <= 0.0) {
+		return Math$1.PI_OVER_TWO;
+	}
+	var sine = Math$1.clamp((surfaceRadius * Math.cos(elevation)) / denominator, 0.0, 1.0);
+	return Math.asin(sine);
+}
+
+function applyExclusion(interval, axisScale, exclusionAngle) {
+	var cosine = Math.cos(exclusionAngle);
+
+	if (Math.abs(axisScale) < epsilon) {
+		return cosine >= 0.0;
+	}
+
+	var limit = cosine / axisScale;
+	if (axisScale > 0.0) {
+		if (limit < 0.0) {
+			return false;
+		}
+		if (limit < 1.0) {
+			interval.maximumCone = Math.min(interval.maximumCone, Math.asin(Math$1.clamp(limit, 0.0, 1.0)));
+		}
+	} else {
+		if (limit > 1.0) {
+			return false;
+		}
+		if (limit > 0.0) {
+			interval.minimumCone = Math.max(interval.minimumCone, Math.asin(Math$1.clamp(limit, 0.0, 1.0)));
+		}
+	}
+
+	return interval.minimumCone <= interval.maximumCone;
+}
+
+function computeConeInterval(clock, innerCone, outerCone, forwardExclusionAngle, aftExclusionAngle) {
+	var interval = {
+		clock: clock,
+		minimumCone: innerCone,
+		maximumCone: outerCone
+	};
+	var cosineClock = Math.cos(clock);
+
+	if (!applyExclusion(interval, cosineClock, forwardExclusionAngle)) {
+		return undefined;
+	}
+	if (!applyExclusion(interval, -cosineClock, aftExclusionAngle)) {
+		return undefined;
+	}
+
+	return interval.minimumCone <= interval.maximumCone ? interval : undefined;
+}
+
+function cloneSampleWithClockOffset(sample, offset) {
+	return {
+		clock: sample.clock + offset,
+		minimumCone: sample.minimumCone,
+		maximumCone: sample.maximumCone
+	};
+}
+
+function sampleIntervals(innerCone, outerCone, forwardExclusionAngle, aftExclusionAngle) {
+	var sampleCount = Math.ceil(Math$1.TWO_PI / angleStep);
+	var clockStep = Math$1.TWO_PI / sampleCount;
+	var samples = new Array(sampleCount);
+	var i;
+	var allSamplesValid = true;
+
+	for (i = 0; i < sampleCount; i++) {
+		samples[i] = computeConeInterval(i * clockStep, innerCone, outerCone, forwardExclusionAngle, aftExclusionAngle);
+		allSamplesValid = allSamplesValid && defined(samples[i]);
+	}
+
+	var spans = [];
+	var currentSpan;
+	for (i = 0; i < sampleCount; i++) {
+		var sample = samples[i];
+		if (defined(sample)) {
+			if (!defined(currentSpan)) {
+				currentSpan = [];
+			}
+			currentSpan.push(sample);
+		} else if (defined(currentSpan)) {
+			spans.push(currentSpan);
+			currentSpan = undefined;
+		}
+	}
+	if (defined(currentSpan)) {
+		spans.push(currentSpan);
+	}
+
+	if (spans.length > 1 && defined(samples[0]) && defined(samples[sampleCount - 1])) {
+		var firstSpan = spans.shift();
+		var lastSpan = spans.pop();
+		for (i = 0; i < firstSpan.length; i++) {
+			lastSpan.push(cloneSampleWithClockOffset(firstSpan[i], Math$1.TWO_PI));
+		}
+		spans.push(lastSpan);
+	}
+
+	var result = [];
+	for (i = 0; i < spans.length; i++) {
+		result.push({
+			samples: spans[i],
+			closed: allSamplesValid
+		});
+	}
+
+	return result;
+}
+
+function createBoundarySegment(span, property, reverse) {
+	var samples = span.samples;
+	if (samples.length < 2) {
+		return undefined;
+	}
+
+	var directions = [];
+	var i;
+	if (reverse) {
+		for (i = samples.length - 1; i > -1; i--) {
+			assignSpherical(directions, samples[i].clock, samples[i][property]);
+		}
+	} else {
+		for (i = 0; i < samples.length; i++) {
+			assignSpherical(directions, samples[i].clock, samples[i][property]);
+		}
+	}
+
+	return {
+		directions: directions,
+		closed: span.closed
+	};
+}
+
+function createRadialSegment(sample, reverse) {
+	if (Math.abs(sample.maximumCone - sample.minimumCone) <= epsilon) {
+		return undefined;
+	}
+
+	var directions = [];
+	if (reverse) {
+		assignSpherical(directions, sample.clock, sample.maximumCone);
+		assignSpherical(directions, sample.clock, sample.minimumCone);
+	} else {
+		assignSpherical(directions, sample.clock, sample.minimumCone);
+		assignSpherical(directions, sample.clock, sample.maximumCone);
+	}
+
+	return {
+		directions: directions,
+		closed: false
+	};
+}
+
+function hasInnerBoundary(span) {
+	var samples = span.samples;
+	for (var i = 0; i < samples.length; i++) {
+		if (samples[i].minimumCone > epsilon) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+function computeDirectionSegments(sarSensor) {
+	var surfaceRadius = Math.max(sarSensor._surfaceRadius, epsilon);
+	var altitude = Math.max(sarSensor._altitude, 0.0);
+	var outerCone = coneFromElevation(sarSensor._minimumElevationAngle, surfaceRadius, altitude);
+	var innerCone = coneFromElevation(sarSensor._maximumElevationAngle, surfaceRadius, altitude);
+	var spans = sampleIntervals(innerCone, outerCone, sarSensor._forwardExclusionAngle, sarSensor._aftExclusionAngle);
+	var directionSegments = [];
+
+	for (var i = 0; i < spans.length; i++) {
+		var span = spans[i];
+		var upperSegment = createBoundarySegment(span, 'maximumCone', false);
+		if (defined(upperSegment)) {
+			directionSegments.push(upperSegment);
+		}
+
+		if (hasInnerBoundary(span)) {
+			var lowerSegment = createBoundarySegment(span, 'minimumCone', true);
+			if (defined(lowerSegment)) {
+				directionSegments.push(lowerSegment);
+			}
+		}
+
+		if (!span.closed) {
+			var samples = span.samples;
+			var startSegment = createRadialSegment(samples[0], false);
+			if (defined(startSegment)) {
+				directionSegments.push(startSegment);
+			}
+
+			var endSegment = createRadialSegment(samples[samples.length - 1], true);
+			if (defined(endSegment)) {
+				directionSegments.push(endSegment);
+			}
+		}
+	}
+
+	return directionSegments;
+}
+
+function createCustomSensor(sarSensor) {
+	return new CustomSensorVolume({
+		_pickPrimitive: sarSensor,
+		show: sarSensor._show,
+		showIntersection: sarSensor._showIntersection,
+		showThroughEllipsoid: sarSensor._showThroughEllipsoid,
+		modelMatrix: sarSensor._modelMatrix,
+		radius: sarSensor._radius,
+		directions: [],
+		lateralSurfaceMaterial: sarSensor._lateralSurfaceMaterial,
+		intersectionColor: sarSensor._intersectionColor,
+		intersectionWidth: sarSensor._intersectionWidth,
+		id: sarSensor._id
+	});
+}
+
+function syncCustomSensor(sarSensor, customSensor) {
+	customSensor.show = sarSensor._show;
+	customSensor.showIntersection = sarSensor._showIntersection;
+	customSensor.showThroughEllipsoid = sarSensor._showThroughEllipsoid;
+	customSensor.modelMatrix = sarSensor._modelMatrix;
+	customSensor.radius = sarSensor._radius;
+	customSensor.lateralSurfaceMaterial = sarSensor._lateralSurfaceMaterial;
+	customSensor.intersectionColor = sarSensor._intersectionColor;
+	customSensor.intersectionWidth = sarSensor._intersectionWidth;
+	customSensor.id = sarSensor._id;
+}
+
+function updateDirections(sarSensor) {
+	var directionSegments = computeDirectionSegments(sarSensor);
+	var customSensors = sarSensor._customSensors;
+	var requiredSensorCount = directionSegments.length > 0 ? 1 : 0;
+
+	while (customSensors.length > requiredSensorCount) {
+		var customSensor = customSensors.pop();
+		if (!customSensor.isDestroyed()) {
+			customSensor.destroy();
+		}
+	}
+
+	if (requiredSensorCount > 0) {
+		if (!defined(customSensors[0])) {
+			customSensors[0] = createCustomSensor(sarSensor);
+		}
+		syncCustomSensor(sarSensor, customSensors[0]);
+		customSensors[0].directionSegments = directionSegments;
+	}
+
+	sarSensor._directionsDirty = false;
+}
+
+function syncAllCustomSensors(sarSensor) {
+	var customSensors = sarSensor._customSensors;
+	for (var i = 0; i < customSensors.length; i++) {
+		syncCustomSensor(sarSensor, customSensors[i]);
+	}
+}
+
+const SarSensorVolume = function(options) {
+	options = options ?? Frozen.EMPTY_OBJECT;
+
+	this._customSensors = [];
+	this._directionsDirty = true;
+
+	this._minimumElevationAngle = options.minimumElevationAngle ?? 0.0;
+	this._maximumElevationAngle = options.maximumElevationAngle ?? Math$1.PI_OVER_TWO;
+	this._forwardExclusionAngle = options.forwardExclusionAngle ?? 0.0;
+	this._aftExclusionAngle = options.aftExclusionAngle ?? 0.0;
+	this._altitude = options.altitude ?? 0.0;
+	this._surfaceRadius = options.surfaceRadius ?? defaultSurfaceRadius$1;
+
+	this._show = options.show ?? true;
+	this._showIntersection = options.showIntersection ?? true;
+	this._showThroughEllipsoid = options.showThroughEllipsoid ?? false;
+	this._modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
+	this._radius = options.radius ?? Number.POSITIVE_INFINITY;
+	this._lateralSurfaceMaterial = defined(options.lateralSurfaceMaterial) ? options.lateralSurfaceMaterial : Material.fromType(Material.ColorType);
+	this._intersectionColor = Color.clone(options.intersectionColor ?? Color.WHITE);
+	this._intersectionWidth = options.intersectionWidth ?? 5.0;
+	this._id = options.id;
+
+	validateElevationAngle('minimumElevationAngle', this._minimumElevationAngle);
+	validateElevationAngle('maximumElevationAngle', this._maximumElevationAngle);
+	validateMinimumMaximum(this._minimumElevationAngle, this._maximumElevationAngle);
+	validateExclusionAngle('forwardExclusionAngle', this._forwardExclusionAngle);
+	validateExclusionAngle('aftExclusionAngle', this._aftExclusionAngle);
+};
+
+Object.defineProperties(SarSensorVolume.prototype, {
+	minimumElevationAngle: {
+		get: function() {
+			return this._minimumElevationAngle;
+		},
+		set: function(value) {
+			validateElevationAngle('minimumElevationAngle', value);
+			validateMinimumMaximum(value, this._maximumElevationAngle);
+			if (this._minimumElevationAngle !== value) {
+				this._minimumElevationAngle = value;
+				this._directionsDirty = true;
+			}
+		}
+	},
+	maximumElevationAngle: {
+		get: function() {
+			return this._maximumElevationAngle;
+		},
+		set: function(value) {
+			validateElevationAngle('maximumElevationAngle', value);
+			validateMinimumMaximum(this._minimumElevationAngle, value);
+			if (this._maximumElevationAngle !== value) {
+				this._maximumElevationAngle = value;
+				this._directionsDirty = true;
+			}
+		}
+	},
+	forwardExclusionAngle: {
+		get: function() {
+			return this._forwardExclusionAngle;
+		},
+		set: function(value) {
+			validateExclusionAngle('forwardExclusionAngle', value);
+			if (this._forwardExclusionAngle !== value) {
+				this._forwardExclusionAngle = value;
+				this._directionsDirty = true;
+			}
+		}
+	},
+	aftExclusionAngle: {
+		get: function() {
+			return this._aftExclusionAngle;
+		},
+		set: function(value) {
+			validateExclusionAngle('aftExclusionAngle', value);
+			if (this._aftExclusionAngle !== value) {
+				this._aftExclusionAngle = value;
+				this._directionsDirty = true;
+			}
+		}
+	},
+	altitude: {
+		get: function() {
+			return this._altitude;
+		},
+		set: function(value) {
+			// >>includeStart('debug', pragmas.debug);
+			if (value < 0.0) {
+				throw new DeveloperError('altitude must be greater than or equal to zero.');
+			}
+			// >>includeEnd('debug');
+			if (this._altitude !== value) {
+				this._altitude = value;
+				this._directionsDirty = true;
+			}
+		}
+	},
+	surfaceRadius: {
+		get: function() {
+			return this._surfaceRadius;
+		},
+		set: function(value) {
+			// >>includeStart('debug', pragmas.debug);
+			if (value <= 0.0) {
+				throw new DeveloperError('surfaceRadius must be greater than zero.');
+			}
+			// >>includeEnd('debug');
+			if (this._surfaceRadius !== value) {
+				this._surfaceRadius = value;
+				this._directionsDirty = true;
+			}
+		}
+	},
+	show: {
+		get: function() {
+			return this._show;
+		},
+		set: function(value) {
+			this._show = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	showIntersection: {
+		get: function() {
+			return this._showIntersection;
+		},
+		set: function(value) {
+			this._showIntersection = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	showThroughEllipsoid: {
+		get: function() {
+			return this._showThroughEllipsoid;
+		},
+		set: function(value) {
+			this._showThroughEllipsoid = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	modelMatrix: {
+		get: function() {
+			return this._modelMatrix;
+		},
+		set: function(value) {
+			this._modelMatrix = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	radius: {
+		get: function() {
+			return this._radius;
+		},
+		set: function(value) {
+			this._radius = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	lateralSurfaceMaterial: {
+		get: function() {
+			return this._lateralSurfaceMaterial;
+		},
+		set: function(value) {
+			this._lateralSurfaceMaterial = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	intersectionColor: {
+		get: function() {
+			return this._intersectionColor;
+		},
+		set: function(value) {
+			this._intersectionColor = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	intersectionWidth: {
+		get: function() {
+			return this._intersectionWidth;
+		},
+		set: function(value) {
+			this._intersectionWidth = value;
+			syncAllCustomSensors(this);
+		}
+	},
+	id: {
+		get: function() {
+			return this._id;
+		},
+		set: function(value) {
+			this._id = value;
+			syncAllCustomSensors(this);
+		}
+	}
+});
+
+SarSensorVolume.prototype.setElevationAngles = function(minimumElevationAngle, maximumElevationAngle) {
+	validateElevationAngle('minimumElevationAngle', minimumElevationAngle);
+	validateElevationAngle('maximumElevationAngle', maximumElevationAngle);
+	validateMinimumMaximum(minimumElevationAngle, maximumElevationAngle);
+
+	if (this._minimumElevationAngle !== minimumElevationAngle || this._maximumElevationAngle !== maximumElevationAngle) {
+		this._minimumElevationAngle = minimumElevationAngle;
+		this._maximumElevationAngle = maximumElevationAngle;
+		this._directionsDirty = true;
+	}
+};
+
+SarSensorVolume.prototype.update = function(frameState) {
+	if (this._directionsDirty) {
+		updateDirections(this);
+	}
+
+	var customSensors = this._customSensors;
+	for (var i = 0; i < customSensors.length; i++) {
+		customSensors[i].update(frameState);
+	}
+};
+
+SarSensorVolume.prototype.isDestroyed = function() {
+	return false;
+};
+
+SarSensorVolume.prototype.destroy = function() {
+	var customSensors = this._customSensors;
+	for (var i = customSensors.length - 1; i > -1; i--) {
+		customSensors[i].destroy();
+	}
+	return destroyObject(this);
+};
+
+const defaultIntersectionColor = Color.WHITE;
+const defaultIntersectionWidth = 1.0;
+const defaultRadius = Number.POSITIVE_INFINITY;
+const defaultMinimumElevationAngle = 0.0;
+const defaultMaximumElevationAngle = Math$1.PI_OVER_TWO;
+const defaultExclusionAngle = 0.0;
+const defaultSurfaceRadius = 6378137.0;
+
+const matrix3Scratch = new Matrix3();
+const cachedPosition = new Cartesian3();
+const cachedOrientation = new Quaternion();
+const surfaceScratch = new Cartesian3();
+const cartographicScratch = new Cartographic();
+
+function getEllipsoid(scene) {
+	return defined(scene.globe) && defined(scene.globe.ellipsoid) ? scene.globe.ellipsoid : Ellipsoid.WGS84;
+}
+
+function getSurfaceData(scene, position, altitude, result) {
+	var ellipsoid = getEllipsoid(scene);
+	var surface = ellipsoid.scaleToGeodeticSurface(position, surfaceScratch);
+	if (!defined(surface)) {
+		return undefined;
+	}
+
+	result.surfaceRadius = Math.max(Cartesian3.magnitude(surface), 1.0);
+
+	if (defined(altitude)) {
+		result.altitude = Math.max(altitude, 0.0);
+		return result;
+	}
+
+	var cartographic = ellipsoid.cartesianToCartographic(position, cartographicScratch);
+	if (defined(cartographic)) {
+		result.altitude = Math.max(cartographic.height, 0.0);
+	} else {
+		result.altitude = Math.max(Cartesian3.distance(position, surface), 0.0);
+	}
+
+	return result;
+}
+
+/**
+ * A {@link Visualizer} which maps {@link Entity#sarSensor} to a {@link SarSensor}.
+ * @alias SarSensorVisualizer
+ * @constructor
+ *
+ * @param {Scene} scene The scene the primitives will be rendered in.
+ * @param {EntityCollection} entityCollection The entityCollection to visualize.
+ */
+const SarSensorVisualizer = function(scene, entityCollection) {
+	// >>includeStart('debug', pragmas.debug);
+	if (!defined(scene)) {
+		throw new DeveloperError('scene is required.');
+	}
+	if (!defined(entityCollection)) {
+		throw new DeveloperError('entityCollection is required.');
+	}
+	// >>includeEnd('debug');
+
+	entityCollection.collectionChanged.addEventListener(SarSensorVisualizer.prototype._onCollectionChanged, this);
+
+	this._scene = scene;
+	this._primitives = scene.primitives;
+	this._entityCollection = entityCollection;
+	this._hash = {};
+	this._entitiesToVisualize = new AssociativeArray();
+	this._surfaceData = {
+		altitude: 0.0,
+		surfaceRadius: defaultSurfaceRadius
+	};
+
+	this._onCollectionChanged(entityCollection, entityCollection.values, [], []);
+};
+
+/**
+ * Updates the primitives created by this visualizer to match their
+ * Entity counterpart at the given time.
+ *
+ * @param {JulianDate} time The time to update to.
+ * @returns {Boolean} This function always returns true.
+ */
+SarSensorVisualizer.prototype.update = function(time) {
+	// >>includeStart('debug', pragmas.debug);
+	if (!defined(time)) {
+		throw new DeveloperError('time is required.');
+	}
+	// >>includeEnd('debug');
+
+	var entities = this._entitiesToVisualize.values;
+	var hash = this._hash;
+	var primitives = this._primitives;
+
+	for (var i = 0, len = entities.length; i < len; i++) {
+		var entity = entities[i];
+		var sarSensorGraphics = entity._sarSensor;
+
+		var position;
+		var orientation;
+		var surfaceData;
+		var data = hash[entity.id];
+		var show = entity.isShowing && entity.isAvailable(time) && Property.getValueOrDefault(sarSensorGraphics._show, time, true);
+
+		if (show) {
+			position = Property.getValueOrUndefined(entity._position, time, cachedPosition);
+			orientation = Property.getValueOrUndefined(entity._orientation, time, cachedOrientation);
+			var altitude = Property.getValueOrUndefined(sarSensorGraphics._altitude, time);
+			if (defined(position) && defined(orientation)) {
+				surfaceData = getSurfaceData(this._scene, position, altitude, this._surfaceData);
+			}
+			show = defined(position) && defined(orientation) && defined(surfaceData);
+		}
+
+		if (!show) {
+			// don't bother creating or updating anything else
+			if (defined(data)) {
+				data.primitive.show = false;
+			}
+			continue;
+		}
+
+		var primitive = defined(data) ? data.primitive : undefined;
+		if (!defined(primitive)) {
+			primitive = new SarSensorVolume();
+			primitive.id = entity;
+			primitives.add(primitive);
+
+			data = {
+				primitive: primitive,
+				position: undefined,
+				orientation: undefined
+			};
+			hash[entity.id] = data;
+		}
+
+		if (!Cartesian3.equals(position, data.position) || !Quaternion.equals(orientation, data.orientation)) {
+			Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation, matrix3Scratch), position, primitive.modelMatrix);
+			data.position = Cartesian3.clone(position, data.position);
+			data.orientation = Quaternion.clone(orientation, data.orientation);
+		}
+
+		primitive.show = true;
+		primitive.setElevationAngles(
+			Property.getValueOrDefault(sarSensorGraphics._minimumElevationAngle, time, defaultMinimumElevationAngle),
+			Property.getValueOrDefault(sarSensorGraphics._maximumElevationAngle, time, defaultMaximumElevationAngle)
+		);
+		primitive.forwardExclusionAngle = Property.getValueOrDefault(sarSensorGraphics._forwardExclusionAngle, time, defaultExclusionAngle);
+		primitive.aftExclusionAngle = Property.getValueOrDefault(sarSensorGraphics._aftExclusionAngle, time, defaultExclusionAngle);
+		primitive.altitude = surfaceData.altitude;
+		primitive.surfaceRadius = surfaceData.surfaceRadius;
+		primitive.radius = Property.getValueOrDefault(sarSensorGraphics._radius, time, defaultRadius);
+		primitive.showIntersection = Property.getValueOrDefault(sarSensorGraphics._showIntersection, time, true);
+		primitive.lateralSurfaceMaterial = MaterialProperty.getValue(time, sarSensorGraphics._lateralSurfaceMaterial, primitive.lateralSurfaceMaterial);
+		primitive.intersectionColor = Property.getValueOrClonedDefault(sarSensorGraphics._intersectionColor, time, defaultIntersectionColor, primitive.intersectionColor);
+		primitive.intersectionWidth = Property.getValueOrDefault(sarSensorGraphics._intersectionWidth, time, defaultIntersectionWidth);
+	}
+	return true;
+};
+
+/**
+ * Returns true if this object was destroyed; otherwise, false.
+ *
+ * @returns {Boolean} True if this object was destroyed; otherwise, false.
+ */
+SarSensorVisualizer.prototype.isDestroyed = function() {
+	return false;
+};
+
+/**
+ * Removes and destroys all primitives created by this instance.
+ */
+SarSensorVisualizer.prototype.destroy = function() {
+	var entities = this._entitiesToVisualize.values;
+	var hash = this._hash;
+	var primitives = this._primitives;
+	for (var i = entities.length - 1; i > -1; i--) {
+		removePrimitive(entities[i], hash, primitives);
+	}
+	return destroyObject(this);
+};
+
+/**
+ * @private
+ */
+SarSensorVisualizer.prototype._onCollectionChanged = function(entityCollection, added, removed, changed) {
+	var i;
+	var entity;
+	var entities = this._entitiesToVisualize;
+	var hash = this._hash;
+	var primitives = this._primitives;
+
+	for (i = added.length - 1; i > -1; i--) {
+		entity = added[i];
+		if (defined(entity._sarSensor) && defined(entity._position) && defined(entity._orientation)) {
+			entities.set(entity.id, entity);
+		}
+	}
+
+	for (i = changed.length - 1; i > -1; i--) {
+		entity = changed[i];
+		if (defined(entity._sarSensor) && defined(entity._position) && defined(entity._orientation)) {
 			entities.set(entity.id, entity);
 		} else {
 			removePrimitive(entity, hash, primitives);
@@ -1882,6 +2894,34 @@ function processRectangularSensor(entity, packet, entityCollection, sourceUri) {
 	processPacketData(Number, rectangularSensor, 'yHalfAngle', rectangularSensorData.yHalfAngle, interval, sourceUri, entityCollection);
 }
 
+function processSarSensor(entity, packet, entityCollection, sourceUri) {
+	var sarSensorData = packet.agi_sarSensor;
+	if (!defined(sarSensorData)) {
+		return;
+	}
+
+	var interval;
+	var intervalString = sarSensorData.interval;
+	if (defined(intervalString)) {
+		iso8601Scratch.iso8601 = intervalString;
+		interval = TimeInterval.fromIso8601(iso8601Scratch);
+	}
+
+	var sarSensor = entity.sarSensor;
+	if (!defined(sarSensor)) {
+		entity.addProperty('sarSensor');
+		sarSensor = new SarSensorGraphics();
+		entity.sarSensor = sarSensor;
+	}
+
+	processCommonSensorProperties(sarSensor, sarSensorData, interval, sourceUri, entityCollection);
+	processPacketData(Number, sarSensor, 'minimumElevationAngle', sarSensorData.minimumElevationAngle, interval, sourceUri, entityCollection);
+	processPacketData(Number, sarSensor, 'maximumElevationAngle', sarSensorData.maximumElevationAngle, interval, sourceUri, entityCollection);
+	processPacketData(Number, sarSensor, 'forwardExclusionAngle', sarSensorData.forwardExclusionAngle, interval, sourceUri, entityCollection);
+	processPacketData(Number, sarSensor, 'aftExclusionAngle', sarSensorData.aftExclusionAngle, interval, sourceUri, entityCollection);
+	processPacketData(Number, sarSensor, 'altitude', sarSensorData.altitude, interval, sourceUri, entityCollection);
+}
+
 var initialized = false;
 
 function initialize() {
@@ -1889,7 +2929,7 @@ function initialize() {
 		return;
 	}
 
-	CzmlDataSource.updaters.push(processConicSensor, processCustomPatternSensor, processRectangularSensor);
+	CzmlDataSource.updaters.push(processConicSensor, processCustomPatternSensor, processRectangularSensor, processSarSensor);
 
 	var originalDefaultVisualizersCallback = DataSourceDisplay.defaultVisualizersCallback;
 	DataSourceDisplay.defaultVisualizersCallback = function(scene, entityCluster, dataSource) {
@@ -1898,7 +2938,8 @@ function initialize() {
 		return array.concat([
 			new ConicSensorVisualizer(scene, entities),
 			new CustomPatternSensorVisualizer(scene, entities),
-			new RectangularSensorVisualizer(scene, entities)
+			new RectangularSensorVisualizer(scene, entities),
+			new SarSensorVisualizer(scene, entities)
 		]);
 	};
 
@@ -1915,7 +2956,10 @@ var cesiumSensorVolumes = {
 	CustomSensorVolume,
 	RectangularPyramidSensorVolume,
 	RectangularSensorGraphics,
-	RectangularSensorVisualizer
+	RectangularSensorVisualizer,
+	SarSensorGraphics,
+	SarSensorVisualizer,
+	SarSensorVolume
 };
 
 export { cesiumSensorVolumes as default };
