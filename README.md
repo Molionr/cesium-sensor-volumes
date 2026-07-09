@@ -75,4 +75,6 @@ To build, run `npm install`, then run `npm run build`.
 
 ## License
 
-Apache 2.0.  Free for commercial and non-commercial use.  See [LICENSE.md](LICENSE.md).
+Apache 2.0. Free for commercial and non-commercial use. See [LICENSE.md](LICENSE.md).
+
+This repository is a fork of [Flowm/cesium-sensor-volumes](https://github.com/Flowm/cesium-sensor-volumes) and contains modifications by Molionr, 2026. The upstream project is based on [AnalyticalGraphicsInc/cesium-sensors](https://github.com/AnalyticalGraphicsInc/cesium-sensors). Existing upstream copyright notices are retained.

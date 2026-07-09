@@ -1,6 +1,9 @@
 // Type definitions for cesium-sensor-volumes
 // A Cesium plugin for visualizing sensor volumes.
-// Project: https://github.com/Flowm/cesium-sensor-volumes
+// Project: https://github.com/Molionr/cesium-sensor-volumes
+// Forked from: https://github.com/Flowm/cesium-sensor-volumes
+// Modified by Molionr, 2026
+// Based on: https://github.com/AnalyticalGraphicsInc/cesium-sensors
 
 import {
 	Color,

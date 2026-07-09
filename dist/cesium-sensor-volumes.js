@@ -5,7 +5,10 @@
 })(this, (function () { 'use strict';
 
 	/**
-	 * Cesium Sensor Volumes - https://github.com/Flowm/cesium-sensor-volumes
+	 * Cesium Sensor Volumes - https://github.com/Molionr/cesium-sensor-volumes
+	 *
+	 * Forked from https://github.com/Flowm/cesium-sensor-volumes
+	 * Modified by Molionr, 2026
 	 *
 	 * Copyright 2016 Jonathan Lounsbury
 	 * Copyright 2011-2014 Analytical Graphics Inc. and Cesium Contributors
@@ -23,7 +26,7 @@
 	 * limitations under the License.
 	 *
 	 * Portions licensed separately.
-	 * See https://github.com/Flowm/cesium-sensor-volumes/blob/master/LICENSE.md for full licensing details.
+	 * See https://github.com/Molionr/cesium-sensor-volumes/blob/main/LICENSE.md for full licensing details.
 	 *
 	 * Derived from Cesium Sensors - https://github.com/AnalyticalGraphicsInc/cesium-sensors
 	 */
